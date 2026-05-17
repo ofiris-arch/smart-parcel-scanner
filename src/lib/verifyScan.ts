@@ -11,6 +11,7 @@ import {
   readPrintedBelowBarcode,
   readPrintedInGuide,
 } from "./printedOcr";
+import { SCAN_CONFIG } from "./scanConfig";
 import type { ScanResult } from "./types";
 
 export interface VerifiedScan {
@@ -34,7 +35,7 @@ export interface ScanFrameOptions {
   barcodeStableFrames?: number;
 }
 
-const MIN_BARCODE_STABLE_FOR_OCR = 2;
+const MIN_BARCODE_STABLE_FOR_OCR = SCAN_CONFIG.barcodeStableFramesForOcr;
 
 export type ScanFrameStatus =
   | { status: "idle" }

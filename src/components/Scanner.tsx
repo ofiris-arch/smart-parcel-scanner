@@ -32,15 +32,16 @@ import {
   getVideoTrack,
   isTorchSupported,
 } from "../lib/torch";
+import { SCAN_CONFIG } from "../lib/scanConfig";
 import { scanFrame, verifiedScanToResult } from "../lib/verifyScan";
 import type { ScanPhase, ScanResult } from "../lib/types";
 import { BarcodeGuide } from "./BarcodeGuide";
 import { MobileCapabilities } from "./MobileCapabilities";
 import { ResultView } from "./ResultView";
 
-const LIVE_SCAN_MS = 550;
-const STABLE_MATCHES = 2;
-const AGGRESSIVE_EVERY = 4;
+const LIVE_SCAN_MS = SCAN_CONFIG.liveScanIntervalMs;
+const STABLE_MATCHES = SCAN_CONFIG.stableMatchesRequired;
+const AGGRESSIVE_EVERY = SCAN_CONFIG.aggressiveBarcodeEvery;
 
 interface ScannerProps {
   onSample?: () => void;
@@ -457,7 +458,7 @@ export function Scanner({ onSample }: ScannerProps) {
               if (stableMatchRef.current >= STABLE_MATCHES) {
                 void completeWithResult(verifiedScanToResult(verified));
               } else {
-                setStatusHint("Match — hold steady…");
+                setStatusHint("Match — confirming…");
                 logScan("verification", "Stable match pending", {
                   barcode: verified.barcode,
                   printedNumber: verified.printedNumber,
