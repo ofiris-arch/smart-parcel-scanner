@@ -1,5 +1,10 @@
 export type CameraFacing = "environment" | "user";
 
+export interface CameraRequest {
+  deviceId?: string;
+  facingMode?: CameraFacing;
+}
+
 export interface CameraErrorInfo {
   message: string;
   needsHttps: boolean;
@@ -136,7 +141,7 @@ function describeGetUserMediaError(err: unknown): CameraErrorInfo {
  * Call this as the first line in the handler — before stopCamera(), setState, etc.
  */
 export function requestCameraFromGesture(
-  _facingMode: CameraFacing,
+  req: CameraRequest = {},
 ): Promise<MediaStream> {
   const gum = getUserMediaFn();
   if (!gum) {
@@ -144,46 +149,52 @@ export function requestCameraFromGesture(
     throw blocked ?? new Error("Camera unavailable");
   }
 
-  // iPhone: { video: true } is the most reliable way to trigger the permission sheet.
+  if (req.deviceId) {
+    return gum({
+      video: { deviceId: { exact: req.deviceId } },
+      audio: false,
+    });
+  }
+
+  if (req.facingMode) {
+    return gum({
+      video: { facingMode: { ideal: req.facingMode } },
+      audio: false,
+    });
+  }
+
+  // First permission on iOS: simplest constraint opens the permission sheet.
   if (isIOS()) {
     return gum({ video: true, audio: false });
   }
 
   return gum({
-    video: { facingMode: { ideal: _facingMode } },
+    video: { facingMode: { ideal: "environment" } },
     audio: false,
   });
 }
 
-/** After permission granted on iOS, try to switch to rear camera. */
-export async function preferRearCamera(track: MediaStreamTrack | null): Promise<void> {
-  if (!track || !isIOS()) return;
-  try {
-    await track.applyConstraints({
-      facingMode: { ideal: "environment" },
-    });
-  } catch {
-    try {
-      await track.applyConstraints({ facingMode: "environment" });
-    } catch {
-      /* keep default camera */
-    }
-  }
-}
-
 /** Request camera with constraint fallbacks (desktop / non-gesture retry). */
-export async function requestCamera(
-  facingMode: CameraFacing,
-): Promise<MediaStream> {
+export async function requestCamera(req: CameraRequest = {}): Promise<MediaStream> {
   const blocked = getCameraBlockReason();
   if (blocked) throw blocked;
 
   const gum = getUserMediaFn()!;
+  const facing = req.facingMode ?? "environment";
 
-  const attempts: MediaStreamConstraints[] = [
+  const attempts: MediaStreamConstraints[] = [];
+
+  if (req.deviceId) {
+    attempts.push({
+      video: { deviceId: { exact: req.deviceId } },
+      audio: false,
+    });
+  }
+
+  attempts.push(
     {
       video: {
-        facingMode: { ideal: facingMode },
+        facingMode: { ideal: facing },
         width: { ideal: 1280 },
         height: { ideal: 720 },
       },
@@ -191,16 +202,16 @@ export async function requestCamera(
     },
     {
       video: {
-        facingMode,
+        facingMode: facing,
         width: { ideal: 1280 },
         height: { ideal: 720 },
       },
       audio: false,
     },
-    { video: { facingMode: { ideal: facingMode } }, audio: false },
-    { video: { facingMode }, audio: false },
+    { video: { facingMode: { ideal: facing } }, audio: false },
+    { video: { facingMode: facing }, audio: false },
     { video: true, audio: false },
-  ];
+  );
 
   let lastError: unknown;
   for (const constraints of attempts) {

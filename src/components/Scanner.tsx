@@ -10,11 +10,18 @@ import {
   isIPhone,
   isMobileDevice,
   isSecureCameraContext,
-  preferRearCamera,
   requestCamera,
   requestCameraFromGesture,
   toCameraError,
+  type CameraRequest,
 } from "../lib/camera";
+import {
+  enumerateVideoCameras,
+  isRearCamera,
+  nextCameraInList,
+  pickDefaultRearCamera,
+  type VideoCameraDevice,
+} from "../lib/cameraDevices";
 import {
   applyTorch,
   getVideoTrack,
@@ -53,9 +60,8 @@ export function Scanner({ onSample }: ScannerProps) {
   const [statusHint, setStatusHint] = useState<string | null>(null);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [facingMode, setFacingMode] = useState<"environment" | "user">(
-    "environment",
-  );
+  const [cameras, setCameras] = useState<VideoCameraDevice[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [torchOn, setTorchOn] = useState(true);
   const [torchSupported, setTorchSupported] = useState(false);
   const [detectBarcode, setDetectBarcode] = useState(true);
@@ -125,11 +131,22 @@ export function Scanner({ onSample }: ScannerProps) {
     [stopCamera],
   );
 
+  const refreshCameraList = useCallback(async () => {
+    const list = await enumerateVideoCameras();
+    setCameras(list);
+    return list;
+  }, []);
+
+  const activeCamera = cameras.find((c) => c.deviceId === selectedDeviceId);
+  const rearActive = activeCamera ? isRearCamera(activeCamera) : true;
+
   const attachStream = useCallback(
-    async (streamPromise: Promise<MediaStream>) => {
+    async (
+      streamPromise: Promise<MediaStream>,
+      request: CameraRequest = {},
+    ) => {
       try {
         setCameraStatus("Requesting camera permission…");
-        const wantTorch = torchOn && facingMode === "environment";
         const stream = await streamPromise;
         streamRef.current = stream;
         const video = videoRef.current;
@@ -142,9 +159,15 @@ export function Scanner({ onSample }: ScannerProps) {
         }
 
         const track = getVideoTrack(stream);
-        if (facingMode === "environment") {
-          await preferRearCamera(track);
-        }
+        const settings = track?.getSettings();
+        const activeId = settings?.deviceId ?? request.deviceId ?? "";
+        if (activeId) setSelectedDeviceId(activeId);
+
+        const list = await refreshCameraList();
+        const matched = list.find((c) => c.deviceId === activeId);
+        const wantTorch =
+          torchOn && (matched ? isRearCamera(matched) : true);
+
         const supported = isTorchSupported(track);
         setTorchSupported(supported);
         if (wantTorch && supported && track) {
@@ -152,7 +175,13 @@ export function Scanner({ onSample }: ScannerProps) {
         }
 
         logScan("lifecycle", "Camera started", {
-          detail: { facingMode, torchOn: wantTorch, torchSupported: supported },
+          detail: {
+            deviceId: activeId,
+            label: matched?.label,
+            cameraCount: list.length,
+            torchOn: wantTorch,
+            torchSupported: supported,
+          },
         });
         setPhase("scanning");
         setError(null);
@@ -167,19 +196,22 @@ export function Scanner({ onSample }: ScannerProps) {
         handleCameraError(err);
       }
     },
-    [facingMode, torchOn, handleCameraError],
+    [torchOn, handleCameraError, refreshCameraList],
   );
 
-  const startCamera = useCallback(() => {
-    stopCamera();
-    primeAudio();
-    const blocked = getCameraBlockReason();
-    if (blocked) {
-      handleCameraError(blocked);
-      return;
-    }
-    void attachStream(requestCamera(facingMode));
-  }, [facingMode, stopCamera, attachStream, handleCameraError]);
+  const startCamera = useCallback(
+    (request: CameraRequest = {}) => {
+      stopCamera();
+      primeAudio();
+      const blocked = getCameraBlockReason();
+      if (blocked) {
+        handleCameraError(blocked);
+        return;
+      }
+      void attachStream(requestCamera(request), request);
+    },
+    [stopCamera, attachStream, handleCameraError],
+  );
 
   /** getUserMedia must be the first call in the tap handler on iPhone Safari. */
   const enableCamera = useCallback(() => {
@@ -190,7 +222,11 @@ export function Scanner({ onSample }: ScannerProps) {
       return;
     }
 
-    const streamPromise = requestCameraFromGesture(facingMode);
+    const request: CameraRequest = selectedDeviceId
+      ? { deviceId: selectedDeviceId }
+      : { facingMode: "environment" };
+
+    const streamPromise = requestCameraFromGesture(request);
 
     stopCamera();
     primeAudio();
@@ -198,25 +234,68 @@ export function Scanner({ onSample }: ScannerProps) {
 
     logScan("lifecycle", "Enable camera tapped", {
       detail: {
-        facingMode,
+        request,
         ios: isIOS(),
         secureContext: window.isSecureContext,
         protocol: window.location.protocol,
       },
     });
 
-    void attachStream(streamPromise);
-  }, [facingMode, stopCamera, attachStream, handleCameraError]);
+    void attachStream(streamPromise, request);
+  }, [selectedDeviceId, stopCamera, attachStream, handleCameraError]);
+
+  /** Switch camera — getUserMedia first (iOS gesture). */
+  const switchToCamera = useCallback(
+    (deviceId: string) => {
+      const blocked = getCameraBlockReason();
+      if (blocked) {
+        handleCameraError(blocked);
+        return;
+      }
+
+      const streamPromise = requestCameraFromGesture({ deviceId });
+
+      stopCamera();
+      primeAudio();
+      setSelectedDeviceId(deviceId);
+
+      logScan("lifecycle", "Camera switched", {
+        detail: { deviceId },
+      });
+
+      void attachStream(streamPromise, { deviceId });
+    },
+    [stopCamera, attachStream, handleCameraError],
+  );
+
+  const cycleCamera = useCallback(() => {
+    const next = nextCameraInList(cameras, selectedDeviceId);
+    if (next) switchToCamera(next.deviceId);
+  }, [cameras, selectedDeviceId, switchToCamera]);
 
   useEffect(() => {
     if (phase !== "scanning") return;
     const track = getVideoTrack(streamRef.current);
-    if (facingMode !== "environment" || !torchSupported || !track) return;
+    if (!rearActive || !torchSupported || !track) return;
     void applyTorch(track, torchOn);
     logScan("lifecycle", torchOn ? "Flash enabled" : "Flash disabled", {
       detail: { torchOn },
     });
-  }, [torchOn, torchSupported, facingMode, phase]);
+  }, [torchOn, torchSupported, rearActive, phase]);
+
+  useEffect(() => {
+    if (!cameraActive) return;
+    const onDeviceChange = () => {
+      void refreshCameraList();
+    };
+    navigator.mediaDevices?.addEventListener("devicechange", onDeviceChange);
+    return () => {
+      navigator.mediaDevices?.removeEventListener(
+        "devicechange",
+        onDeviceChange,
+      );
+    };
+  }, [cameraActive, refreshCameraList]);
 
   useEffect(() => {
     let cancelled = false;
@@ -264,13 +343,11 @@ export function Scanner({ onSample }: ScannerProps) {
     if (!engineReady || isMobileDevice()) return;
     if (desktopCameraStartedRef.current) return;
     desktopCameraStartedRef.current = true;
-    startCamera();
-  }, [engineReady, startCamera]);
-
-  useEffect(() => {
-    if (!engineReady || isMobileDevice() || !cameraActive) return;
-    startCamera();
-  }, [facingMode]);
+    void refreshCameraList().then((list) => {
+      const rear = pickDefaultRearCamera(list);
+      startCamera(rear ? { deviceId: rear.deviceId } : { facingMode: "environment" });
+    });
+  }, [engineReady, startCamera, refreshCameraList]);
 
   useEffect(() => {
     if (phase !== "scanning" || !engineReady) return;
@@ -524,10 +601,10 @@ export function Scanner({ onSample }: ScannerProps) {
         <button
           type="button"
           className={torchOn ? "secondary torch-on toggle-on" : "secondary"}
-          disabled={busy || !torchSupported || facingMode === "user"}
+          disabled={busy || !torchSupported || !rearActive}
           aria-pressed={torchOn}
           title={
-            facingMode === "user"
+            !rearActive
               ? "Flash works on rear camera only"
               : torchSupported
                 ? "Toggle camera flash"
@@ -540,28 +617,37 @@ export function Scanner({ onSample }: ScannerProps) {
         >
           {torchOn ? "Flash on" : "Flash off"}
         </button>
+        <label className="camera-select">
+          <span className="camera-select-label">Camera</span>
+          <select
+            value={selectedDeviceId}
+            disabled={busy || !cameraActive || cameras.length === 0}
+            onChange={(e) => {
+              primeAudio();
+              switchToCamera(e.target.value);
+            }}
+          >
+            {cameras.length === 0 ? (
+              <option value="">No cameras listed</option>
+            ) : (
+              cameras.map((c) => (
+                <option key={c.deviceId} value={c.deviceId}>
+                  {c.label}
+                </option>
+              ))
+            )}
+          </select>
+        </label>
         <button
           type="button"
           className="secondary"
-          disabled={busy}
+          disabled={busy || !cameraActive || cameras.length < 2}
           onClick={() => {
             primeAudio();
-            const next =
-              facingMode === "environment" ? "user" : "environment";
-            setFacingMode(next);
-            if (isMobileDevice()) {
-              const blocked = getCameraBlockReason();
-              if (blocked) {
-                handleCameraError(blocked);
-                return;
-              }
-              const streamPromise = requestCameraFromGesture(next);
-              stopCamera();
-              void attachStream(streamPromise);
-            }
+            cycleCamera();
           }}
         >
-          Flip camera
+          Next camera
         </button>
         {onSample && (
           <button

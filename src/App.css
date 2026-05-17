@@ -160,6 +160,32 @@
   margin-bottom: -0.25rem;
 }
 
+.camera-select {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.camera-select-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.camera-select select {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: inherit;
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+
 .mobile-capabilities {
   display: flex;
   flex-wrap: wrap;

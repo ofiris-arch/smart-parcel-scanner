@@ -46,9 +46,20 @@ Create a new repo on [github.com/new](https://github.com/new) (e.g. `smart-parce
 
 ```bash
 git branch -M main
-git remote add origin https://github.com/YOUR_USER/smart-parcel-scanner.git
+git remote add origin https://github.com/ofiris-arch/smart-parcel-scanner.git
 git push -u origin main
 ```
+
+**Push blocked with `denied to ofiri84`?** Your Mac is logged into GitHub as `ofiri84`, not `ofiris-arch`. Pick one:
+
+1. **Easiest:** On GitHub (as `ofiris-arch`) → repo **Settings** → **Collaborators** → add **`ofiri84`** with Write access → push again from your Mac.
+2. **Use `ofiris-arch` token:** [Create a token](https://github.com/settings/tokens) (classic, `repo` scope) while logged in as `ofiris-arch`, then:
+   ```bash
+   git remote set-url origin https://ofiris-arch@github.com/ofiris-arch/smart-parcel-scanner.git
+   git push -u origin main
+   ```
+   At the password prompt, paste the token (not your GitHub password).
+3. **Clear Keychain:** Open **Keychain Access** → search `github` → delete **internet password** entries → push again and sign in as `ofiris-arch`.
 
 ### 2. GitHub Pages (free HTTPS)
 
