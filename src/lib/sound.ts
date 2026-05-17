@@ -41,29 +41,56 @@ function encodeWavMono(samples: Float32Array, sampleRate: number): ArrayBuffer {
   return buffer;
 }
 
-function buildSuccessBeepSamples(sampleRate = 44100): Float32Array {
-  const parts: number[] = [];
-  const tones: { freq: number; duration: number }[] = [
-    { freq: 880, duration: 0.12 },
-    { freq: 1174, duration: 0.2 },
-  ];
-  const gapSamples = Math.floor(sampleRate * 0.12);
+/** Bell partials — wallet-style ascending chime (not Apple's proprietary audio). */
+function paymentBellSample(
+  freq: number,
+  timeSec: number,
+  durationSec: number,
+): number {
+  if (timeSec < 0 || timeSec > durationSec) return 0;
+  const attack = Math.min(1, timeSec / 0.003);
+  const decay = Math.exp(-timeSec * 14);
+  const env = attack * decay;
+  const f = 2 * Math.PI * freq * timeSec;
+  const tone =
+    Math.sin(f) +
+    0.32 * Math.sin(f * 2) +
+    0.12 * Math.sin(f * 3) +
+    0.06 * Math.sin(f * 4.2);
+  return tone * env * 0.36;
+}
 
-  for (let t = 0; t < tones.length; t++) {
-    if (t > 0) {
-      for (let i = 0; i < gapSamples; i++) parts.push(0);
-    }
-    const { freq, duration } = tones[t]!;
-    const count = Math.floor(sampleRate * duration);
+/** Three quick ascending notes similar to mobile wallet “payment approved” chimes. */
+function buildSuccessBeepSamples(sampleRate = 44100): Float32Array {
+  const notes = [
+    { freq: 1046.5, duration: 0.052, start: 0 },
+    { freq: 1318.51, duration: 0.052, start: 0.058 },
+    { freq: 1567.98, duration: 0.13, start: 0.116 },
+  ];
+  const totalSec = 0.28;
+  const length = Math.ceil(sampleRate * totalSec);
+  const out = new Float32Array(length);
+
+  for (const note of notes) {
+    const startIdx = Math.floor(note.start * sampleRate);
+    const count = Math.floor(note.duration * sampleRate);
     for (let i = 0; i < count; i++) {
-      const time = i / sampleRate;
-      const env =
-        i < 80 ? i / 80 : i > count - 120 ? (count - i) / 120 : 1;
-      parts.push(Math.sin(2 * Math.PI * freq * time) * 0.38 * env);
+      const idx = startIdx + i;
+      if (idx >= length) break;
+      const t = i / sampleRate;
+      out[idx]! += paymentBellSample(note.freq, t, note.duration);
     }
   }
 
-  return new Float32Array(parts);
+  let peak = 0;
+  for (const s of out) peak = Math.max(peak, Math.abs(s));
+  if (peak > 0) {
+    for (let i = 0; i < out.length; i++) {
+      out[i] = (out[i]! / peak) * 0.9;
+    }
+  }
+
+  return out;
 }
 
 let beepDataUri: string | null = null;
@@ -83,30 +110,37 @@ function getBeepDataUri(): string {
 }
 
 function getBeepAudio(): HTMLAudioElement {
-  if (!beepAudio) {
-    beepAudio = new Audio(getBeepDataUri());
+  const uri = getBeepDataUri();
+  if (!beepAudio || beepAudio.src !== uri) {
+    beepAudio = new Audio(uri);
     beepAudio.preload = "auto";
   }
   return beepAudio;
 }
 
-function playTone(
+function playPaymentNote(
   ctx: AudioContext,
   frequency: number,
   startAt: number,
   durationSec: number,
 ): void {
-  const osc = ctx.createOscillator();
   const gain = ctx.createGain();
-  osc.type = "sine";
-  osc.frequency.value = frequency;
   gain.gain.setValueAtTime(0.0001, startAt);
-  gain.gain.exponentialRampToValueAtTime(0.4, startAt + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.45, startAt + 0.004);
   gain.gain.exponentialRampToValueAtTime(0.0001, startAt + durationSec);
-  osc.connect(gain);
   gain.connect(ctx.destination);
-  osc.start(startAt);
-  osc.stop(startAt + durationSec);
+
+  for (const mult of [1, 2, 3]) {
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = frequency * mult;
+    const partialGain = ctx.createGain();
+    partialGain.gain.value = mult === 1 ? 1 : mult === 2 ? 0.28 : 0.12;
+    osc.connect(partialGain);
+    partialGain.connect(gain);
+    osc.start(startAt);
+    osc.stop(startAt + durationSec);
+  }
 }
 
 function hapticSuccess(): void {
@@ -142,7 +176,7 @@ export async function primeAudioAsync(): Promise<boolean> {
       return true;
     } catch {
       const t0 = ctx.currentTime;
-      playTone(ctx, 440, t0, 0.04);
+      playPaymentNote(ctx, 1046.5, t0, 0.04);
       primed = ctx.state === "running";
       return primed;
     }
@@ -162,9 +196,10 @@ async function playWithWebAudio(): Promise<boolean> {
     await ctx.resume();
   }
   const t0 = ctx.currentTime;
-  playTone(ctx, 880, t0, 0.12);
-  playTone(ctx, 1174, t0 + 0.14, 0.2);
-  await new Promise((r) => setTimeout(r, 380));
+  playPaymentNote(ctx, 1046.5, t0, 0.052);
+  playPaymentNote(ctx, 1318.51, t0 + 0.058, 0.052);
+  playPaymentNote(ctx, 1567.98, t0 + 0.116, 0.13);
+  await new Promise((r) => setTimeout(r, 320));
   return ctx.state === "running";
 }
 
