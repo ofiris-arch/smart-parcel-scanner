@@ -1,11 +1,13 @@
-/** Tunables for live scan speed vs stability (lower = faster, less stable). */
+/** Tunables for live scan / burst capture. */
 export const SCAN_CONFIG = {
-  /** Ms between frame scans while camera is active. */
-  liveScanIntervalMs: 380,
-  /** Consecutive matching frames before capture (1 = instant on first match). */
-  stableMatchesRequired: 1,
-  /** Barcode frames in a row before OCR runs (1 = OCR on first barcode read). */
-  barcodeStableFramesForOcr: 1,
-  /** Run aggressive barcode decode every N frames. */
-  aggressiveBarcodeEvery: 3,
+  /** Ms between lightweight barcode preview checks. */
+  previewScanIntervalMs: 450,
+  /** Same barcode seen this many previews before auto burst. */
+  barcodeTriggersBurstAfter: 1,
+  /** Number of still photos per burst. */
+  burstPhotoCount: 3,
+  /** Ms between each photo in a burst. */
+  burstPhotoIntervalMs: 100,
+  /** Min frames that must agree on barcode + printed (of burstPhotoCount). */
+  burstMinAgreeingFrames: 2,
 } as const;

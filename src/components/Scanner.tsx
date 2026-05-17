@@ -32,16 +32,17 @@ import {
   getVideoTrack,
   isTorchSupported,
 } from "../lib/torch";
+import {
+  analyzeBurstFrames,
+  captureBurstFromVideo,
+  previewBarcode,
+} from "../lib/burstScan";
 import { SCAN_CONFIG } from "../lib/scanConfig";
-import { scanFrame, verifiedScanToResult } from "../lib/verifyScan";
+import { verifiedScanToResult } from "../lib/verifyScan";
 import type { ScanPhase, ScanResult } from "../lib/types";
 import { BarcodeGuide } from "./BarcodeGuide";
 import { MobileCapabilities } from "./MobileCapabilities";
 import { ResultView } from "./ResultView";
-
-const LIVE_SCAN_MS = SCAN_CONFIG.liveScanIntervalMs;
-const STABLE_MATCHES = SCAN_CONFIG.stableMatchesRequired;
-const AGGRESSIVE_EVERY = SCAN_CONFIG.aggressiveBarcodeEvery;
 
 interface ScannerProps {
   onSample?: () => void;
@@ -54,12 +55,10 @@ export function Scanner({ onSample }: ScannerProps) {
   const rafRef = useRef(0);
   const lastScanRef = useRef(0);
   const scanningRef = useRef(false);
-  const stableMatchRef = useRef(0);
-  const lastMatchKeyRef = useRef("");
-  const attemptRef = useRef(0);
+  const burstInProgressRef = useRef(false);
+  const previewBarcodeRef = useRef("");
+  const previewStableRef = useRef(0);
   const enginesReadyRef = useRef(false);
-  const barcodeStableFramesRef = useRef(0);
-  const lastBarcodeSeenRef = useRef("");
 
   const [phase, setPhase] = useState<ScanPhase>("scanning");
   const [engineReady, setEngineReady] = useState(false);
@@ -197,11 +196,8 @@ export function Scanner({ onSample }: ScannerProps) {
         setError(null);
         setCameraActive(true);
         setCameraStatus(null);
-        stableMatchRef.current = 0;
-        lastMatchKeyRef.current = "";
-        barcodeStableFramesRef.current = 0;
-        lastBarcodeSeenRef.current = "";
-        attemptRef.current = 0;
+        previewStableRef.current = 0;
+        previewBarcodeRef.current = "";
       } catch (err) {
         handleCameraError(err);
       }
@@ -359,125 +355,128 @@ export function Scanner({ onSample }: ScannerProps) {
     });
   }, [engineReady, startCamera, refreshCameraList]);
 
+  const runBurstCapture = useCallback(async () => {
+    if (burstInProgressRef.current || !cameraActive) return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    burstInProgressRef.current = true;
+    setPhase("processing");
+
+    try {
+      setStatusHint(
+        `Taking ${SCAN_CONFIG.burstPhotoCount} photos — hold steady…`,
+      );
+
+      const frames = await captureBurstFromVideo(
+        video,
+        SCAN_CONFIG.burstPhotoCount,
+        SCAN_CONFIG.burstPhotoIntervalMs,
+      );
+
+      setStatusHint("Analyzing photos…");
+
+      const burst = await analyzeBurstFrames(frames, {
+        detectBarcode,
+        detectPrintedNumber,
+      });
+
+      if (burst.ok && burst.scan) {
+        logScan("verification", "Burst capture verified", {
+          barcode: burst.scan.barcode,
+          printedNumber: burst.scan.printedNumber,
+          matched: true,
+          detail: {
+            votes: burst.votes,
+            framesAnalyzed: burst.framesAnalyzed,
+          },
+          conclusion: "Verified match (burst)",
+        });
+        await completeWithResult(verifiedScanToResult(burst.scan));
+      } else {
+        previewStableRef.current = 0;
+        previewBarcodeRef.current = "";
+        setPhase("scanning");
+        setStatusHint(
+          "Could not verify — center the label in the box and try again",
+        );
+      }
+    } catch {
+      setPhase("scanning");
+      setStatusHint(null);
+    } finally {
+      burstInProgressRef.current = false;
+    }
+  }, [
+    cameraActive,
+    detectBarcode,
+    detectPrintedNumber,
+    completeWithResult,
+  ]);
+
   useEffect(() => {
-    if (phase !== "scanning" || !engineReady) return;
+    if (phase !== "scanning" || !engineReady || !cameraActive) return;
 
     const tick = (now: number) => {
       if (
-        now - lastScanRef.current >= LIVE_SCAN_MS &&
-        !scanningRef.current
+        burstInProgressRef.current ||
+        scanningRef.current ||
+        now - lastScanRef.current < SCAN_CONFIG.previewScanIntervalMs
       ) {
-        lastScanRef.current = now;
-        const frame = frameFromVideo();
-        if (frame) {
-          scanningRef.current = true;
-          attemptRef.current += 1;
-          const aggressive =
-            attemptRef.current % AGGRESSIVE_EVERY === 0 ||
-            attemptRef.current <= 2;
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
 
-          if (!detectBarcode && !detectPrintedNumber) {
-            setStatusHint("Enable barcode or printed number detection");
-            scanningRef.current = false;
+      if (!detectBarcode && !detectPrintedNumber) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+
+      const frame = frameFromVideo();
+      if (!frame) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+
+      lastScanRef.current = now;
+      scanningRef.current = true;
+
+      void (async () => {
+        try {
+          if (!detectBarcode) {
+            await runBurstCapture();
             return;
           }
 
-          setStatusHint("Scanning…");
-          void scanFrame(frame, {
-            aggressiveBarcode: aggressive,
-            detectBarcode,
-            detectPrintedNumber,
-            barcodeStableFrames: barcodeStableFramesRef.current,
-          })
-            .then((outcome) => {
-              if (outcome.status === "idle") {
-                setStatusHint("Enable barcode or printed number detection");
-                return;
-              }
+          const barcode = await previewBarcode(frame);
+          if (!barcode) {
+            previewStableRef.current = 0;
+            previewBarcodeRef.current = "";
+            setStatusHint(null);
+            return;
+          }
 
-              if (outcome.status === "no_barcode") {
-                stableMatchRef.current = 0;
-                lastMatchKeyRef.current = "";
-                barcodeStableFramesRef.current = 0;
-                lastBarcodeSeenRef.current = "";
-                setStatusHint(null);
-                return;
-              }
+          if (barcode === previewBarcodeRef.current) {
+            previewStableRef.current += 1;
+          } else {
+            previewBarcodeRef.current = barcode;
+            previewStableRef.current = 1;
+          }
 
-              if (outcome.status === "barcode_locked") {
-                const b = outcome.barcode;
-                if (b === lastBarcodeSeenRef.current) {
-                  barcodeStableFramesRef.current += 1;
-                } else {
-                  barcodeStableFramesRef.current = 1;
-                  lastBarcodeSeenRef.current = b;
-                }
-                setStatusHint("Barcode locked — reading number…");
-                return;
-              }
-
-              if (outcome.status === "no_printed") {
-                setStatusHint("Reading printed number… hold steady");
-                return;
-              }
-
-              if (outcome.status === "barcode_only") {
-                setStatusHint("Barcode found — hold steady for printed number");
-                return;
-              }
-
-              if (outcome.status === "mismatch") {
-                setStatusHint("Mismatch — adjust label");
-                stableMatchRef.current = 0;
-                lastMatchKeyRef.current = "";
-                return;
-              }
-
-              const verified =
-                outcome.status === "verified"
-                  ? outcome.scan
-                  : {
-                      barcode: outcome.printed,
-                      printedNumber: outcome.printed,
-                      matched: true as const,
-                      accuracyPercent: 100,
-                      ocrConfidence: 0,
-                      barcodeDetectionMs: 0,
-                      printedDetectionMs: outcome.printedDetectionMs,
-                      processingMs: outcome.printedDetectionMs,
-                    };
-
-              const key = `${verified.barcode}|${verified.printedNumber}`;
-              if (key === lastMatchKeyRef.current) {
-                stableMatchRef.current += 1;
-              } else {
-                stableMatchRef.current = 1;
-                lastMatchKeyRef.current = key;
-              }
-
-              if (stableMatchRef.current >= STABLE_MATCHES) {
-                void completeWithResult(verifiedScanToResult(verified));
-              } else {
-                setStatusHint("Match — confirming…");
-                logScan("verification", "Stable match pending", {
-                  barcode: verified.barcode,
-                  printedNumber: verified.printedNumber,
-                  matched: true,
-                  detail: {
-                    stableCount: stableMatchRef.current,
-                    required: STABLE_MATCHES,
-                  },
-                });
-              }
-            })
-            .catch(() => {
-              setStatusHint(null);
-            })
-            .finally(() => {
-              scanningRef.current = false;
-            });
+          if (
+            previewStableRef.current >=
+            SCAN_CONFIG.barcodeTriggersBurstAfter
+          ) {
+            previewStableRef.current = 0;
+            await runBurstCapture();
+          } else {
+            setStatusHint("Barcode detected — preparing capture…");
+          }
+        } finally {
+          scanningRef.current = false;
         }
-      }
+      })();
+
       rafRef.current = requestAnimationFrame(tick);
     };
 
@@ -486,18 +485,18 @@ export function Scanner({ onSample }: ScannerProps) {
   }, [
     phase,
     engineReady,
+    cameraActive,
     frameFromVideo,
-    completeWithResult,
     detectBarcode,
     detectPrintedNumber,
+    runBurstCapture,
   ]);
 
   const reset = () => {
     setResult(null);
     setError(null);
-    stableMatchRef.current = 0;
-    lastMatchKeyRef.current = "";
-    attemptRef.current = 0;
+    previewStableRef.current = 0;
+    previewBarcodeRef.current = "";
     setPhase("scanning");
     if (isMobileDevice()) {
       stopCamera();
@@ -570,7 +569,7 @@ export function Scanner({ onSample }: ScannerProps) {
           <div className="guide">
             <p>
               {statusHint ??
-                "Place barcode in the orange box — hold steady until capture"}
+                "Align barcode in the box — auto-captures 3 photos when detected"}
             </p>
           </div>
         </div>
@@ -592,8 +591,8 @@ export function Scanner({ onSample }: ScannerProps) {
           onClick={() => {
             primeAudio();
             setDetectBarcode((on) => !on);
-            stableMatchRef.current = 0;
-            lastMatchKeyRef.current = "";
+            previewStableRef.current = 0;
+            previewBarcodeRef.current = "";
           }}
         >
           {detectBarcode ? "Barcode on" : "Barcode off"}
@@ -606,8 +605,8 @@ export function Scanner({ onSample }: ScannerProps) {
           onClick={() => {
             primeAudio();
             setDetectPrintedNumber((on) => !on);
-            stableMatchRef.current = 0;
-            lastMatchKeyRef.current = "";
+            previewStableRef.current = 0;
+            previewBarcodeRef.current = "";
           }}
         >
           {detectPrintedNumber ? "Number on" : "Number off"}
@@ -615,6 +614,17 @@ export function Scanner({ onSample }: ScannerProps) {
       </div>
 
       <div className="controls">
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || !cameraActive}
+          onClick={() => {
+            primeAudio();
+            void runBurstCapture();
+          }}
+        >
+          Capture now
+        </button>
         <button
           type="button"
           className={torchOn ? "secondary torch-on toggle-on" : "secondary"}
