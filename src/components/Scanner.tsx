@@ -35,7 +35,6 @@ import {
 import {
   analyzeBurstFrames,
   captureBurstFromVideo,
-  previewBarcode,
 } from "../lib/burstScan";
 import { SCAN_CONFIG } from "../lib/scanConfig";
 import { verifiedScanToResult } from "../lib/verifyScan";
@@ -52,15 +51,7 @@ export function Scanner({ onSample }: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const frameRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const rafRef = useRef(0);
-  const lastScanRef = useRef(0);
-  const scanningRef = useRef(false);
   const burstInProgressRef = useRef(false);
-  const previewBarcodeRef = useRef("");
-  const previewStableRef = useRef(0);
-  const burstCooldownUntilRef = useRef(0);
-  const blockedBarcodeRef = useRef("");
-  const noBarcodeStreakRef = useRef(0);
   const enginesReadyRef = useRef(false);
 
   const [phase, setPhase] = useState<ScanPhase>("scanning");
@@ -104,16 +95,6 @@ export function Scanner({ onSample }: ScannerProps) {
         href: window.location.href,
       },
     });
-  }, []);
-
-  const frameFromVideo = useCallback((): HTMLCanvasElement | null => {
-    const video = videoRef.current;
-    const frame = frameRef.current;
-    if (!video || !frame || video.readyState < 2) return null;
-    frame.width = video.videoWidth;
-    frame.height = video.videoHeight;
-    frame.getContext("2d")!.drawImage(video, 0, 0);
-    return frame;
   }, []);
 
   const completeWithResult = useCallback(
@@ -199,8 +180,6 @@ export function Scanner({ onSample }: ScannerProps) {
         setError(null);
         setCameraActive(true);
         setCameraStatus(null);
-        previewStableRef.current = 0;
-        previewBarcodeRef.current = "";
       } catch (err) {
         handleCameraError(err);
       }
@@ -343,7 +322,6 @@ export function Scanner({ onSample }: ScannerProps) {
       enginesReadyRef.current = false;
       window.removeEventListener("pointerdown", onGesture, { capture: true });
       window.removeEventListener("touchstart", onGesture, { capture: true });
-      cancelAnimationFrame(rafRef.current);
       stopCamera();
     };
   }, [stopCamera]);
@@ -358,20 +336,12 @@ export function Scanner({ onSample }: ScannerProps) {
     });
   }, [engineReady, startCamera, refreshCameraList]);
 
-  const runBurstCapture = useCallback(async (manual = false) => {
+  const runBurstCapture = useCallback(async () => {
     if (burstInProgressRef.current || !cameraActive) return;
-    if (manual) {
-      blockedBarcodeRef.current = "";
-      burstCooldownUntilRef.current = 0;
-    } else if (Date.now() < burstCooldownUntilRef.current) {
-      return;
-    }
     const video = videoRef.current;
     if (!video) return;
 
-    const triggeredBarcode = previewBarcodeRef.current;
     burstInProgressRef.current = true;
-    previewStableRef.current = 0;
     setPhase("processing");
 
     try {
@@ -405,22 +375,12 @@ export function Scanner({ onSample }: ScannerProps) {
         });
         await completeWithResult(verifiedScanToResult(burst.scan));
       } else {
-        blockedBarcodeRef.current = triggeredBarcode || previewBarcodeRef.current;
-        noBarcodeStreakRef.current = 0;
-        burstCooldownUntilRef.current =
-          Date.now() + SCAN_CONFIG.burstCooldownMs;
-        previewStableRef.current = 0;
-        previewBarcodeRef.current = "";
         setPhase("scanning");
         setStatusHint(
-          blockedBarcodeRef.current
-            ? "Could not verify — move label away, then align again (or tap Capture now)"
-            : "Could not verify — center the label in the box and try again",
+          "Could not verify — adjust the label and tap Take photos again",
         );
       }
     } catch {
-      burstCooldownUntilRef.current =
-        Date.now() + SCAN_CONFIG.burstCooldownMs;
       setPhase("scanning");
       setStatusHint(null);
     } finally {
@@ -433,120 +393,9 @@ export function Scanner({ onSample }: ScannerProps) {
     completeWithResult,
   ]);
 
-  useEffect(() => {
-    if (phase !== "scanning" || !engineReady || !cameraActive) return;
-
-    const tick = (now: number) => {
-      if (
-        burstInProgressRef.current ||
-        scanningRef.current ||
-        now - lastScanRef.current < SCAN_CONFIG.previewScanIntervalMs
-      ) {
-        rafRef.current = requestAnimationFrame(tick);
-        return;
-      }
-
-      if (!detectBarcode && !detectPrintedNumber) {
-        rafRef.current = requestAnimationFrame(tick);
-        return;
-      }
-
-      const frame = frameFromVideo();
-      if (!frame) {
-        rafRef.current = requestAnimationFrame(tick);
-        return;
-      }
-
-      lastScanRef.current = now;
-      scanningRef.current = true;
-
-      void (async () => {
-        try {
-          if (!detectBarcode) {
-            setStatusHint("Turn on barcode detection or tap Capture now");
-            return;
-          }
-
-          if (Date.now() < burstCooldownUntilRef.current) {
-            return;
-          }
-
-          const barcode = await previewBarcode(frame);
-          if (!barcode) {
-            previewStableRef.current = 0;
-            previewBarcodeRef.current = "";
-            noBarcodeStreakRef.current += 1;
-            if (
-              noBarcodeStreakRef.current >=
-              SCAN_CONFIG.previewClearFramesRequired
-            ) {
-              blockedBarcodeRef.current = "";
-            }
-            if (!blockedBarcodeRef.current) {
-              setStatusHint(null);
-            }
-            return;
-          }
-
-          noBarcodeStreakRef.current = 0;
-
-          if (
-            blockedBarcodeRef.current &&
-            barcode === blockedBarcodeRef.current
-          ) {
-            setStatusHint(
-              "Move label out of the box briefly, then align again",
-            );
-            return;
-          }
-
-          if (barcode !== blockedBarcodeRef.current) {
-            blockedBarcodeRef.current = "";
-          }
-
-          if (barcode === previewBarcodeRef.current) {
-            previewStableRef.current += 1;
-          } else {
-            previewBarcodeRef.current = barcode;
-            previewStableRef.current = 1;
-          }
-
-          if (
-            previewStableRef.current >=
-            SCAN_CONFIG.barcodeTriggersBurstAfter
-          ) {
-            await runBurstCapture(false);
-          } else {
-            setStatusHint("Barcode detected — hold steady…");
-          }
-        } finally {
-          scanningRef.current = false;
-        }
-      })();
-
-      rafRef.current = requestAnimationFrame(tick);
-    };
-
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [
-    phase,
-    engineReady,
-    cameraActive,
-    frameFromVideo,
-    detectBarcode,
-    detectPrintedNumber,
-    runBurstCapture,
-  ]);
-
   const reset = () => {
     setResult(null);
     setError(null);
-    previewStableRef.current = 0;
-    previewBarcodeRef.current = "";
-    blockedBarcodeRef.current = "";
-    noBarcodeStreakRef.current = 0;
-    burstCooldownUntilRef.current = 0;
     setPhase("scanning");
     if (isMobileDevice()) {
       stopCamera();
@@ -619,7 +468,7 @@ export function Scanner({ onSample }: ScannerProps) {
           <div className="guide">
             <p>
               {statusHint ??
-                "Align barcode in the box — auto-captures 3 photos when detected"}
+                "Align label in the box, then tap Take photos"}
             </p>
           </div>
         </div>
@@ -641,8 +490,6 @@ export function Scanner({ onSample }: ScannerProps) {
           onClick={() => {
             primeAudio();
             setDetectBarcode((on) => !on);
-            previewStableRef.current = 0;
-            previewBarcodeRef.current = "";
           }}
         >
           {detectBarcode ? "Barcode on" : "Barcode off"}
@@ -655,8 +502,6 @@ export function Scanner({ onSample }: ScannerProps) {
           onClick={() => {
             primeAudio();
             setDetectPrintedNumber((on) => !on);
-            previewStableRef.current = 0;
-            previewBarcodeRef.current = "";
           }}
         >
           {detectPrintedNumber ? "Number on" : "Number off"}
@@ -670,10 +515,10 @@ export function Scanner({ onSample }: ScannerProps) {
           disabled={busy || !cameraActive}
           onClick={() => {
             primeAudio();
-            void runBurstCapture(true);
+            void runBurstCapture();
           }}
         >
-          Capture now
+          Take photos
         </button>
         <button
           type="button"
