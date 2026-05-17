@@ -10,6 +10,9 @@ import {
   type VerifiedScan,
 } from "./verifyScan";
 import { verificationAccuracy } from "./accuracy";
+import { verifyBarcode } from "./barcode";
+import { buildScanFields } from "./buildFields";
+import type { ScanResult } from "./types";
 
 export function captureFrameFromVideo(
   video: HTMLVideoElement,
@@ -274,5 +277,37 @@ export async function analyzeBurstFrames(
       printed: lastPrinted,
       statuses,
     },
+  };
+}
+
+export function burstFailureToResult(
+  burst: BurstAnalyzeResult,
+  processingMs: number,
+): ScanResult {
+  const barcode = burst.debug?.barcode ?? "—";
+  const printed = burst.debug?.printed ?? null;
+  const verification = verifyBarcode(
+    barcode !== "—"
+      ? { value: barcode, bottomY: 0, leftX: 0, rightX: 0 }
+      : null,
+    printed,
+  );
+
+  const fields = buildScanFields(verification, []);
+  if (printed) {
+    fields.push({
+      key: "OCR read",
+      value: printed,
+      highlight: verification.match === false ? "danger" : undefined,
+    });
+  }
+
+  return {
+    barcode: barcode !== "—" ? barcode : "Not detected",
+    printedNumber: printed ?? undefined,
+    matched: false,
+    accuracyPercent: 0,
+    processingMs,
+    fields,
   };
 }

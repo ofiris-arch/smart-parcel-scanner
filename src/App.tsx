@@ -85,8 +85,8 @@ function App() {
       <header className="app-header">
         <h1>Barcode Scanner</h1>
         <p>
-          Tap Take photos — we capture 3 stills and match the barcode to the
-          printed tracking number.
+          Point at the barcode — when it reads clearly we capture 3 photos,
+          then match the printed tracking number.
         </p>
         <MobileOpenQr />
       </header>

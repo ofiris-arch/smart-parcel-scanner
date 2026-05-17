@@ -29,7 +29,8 @@ describe("burstScan", () => {
     expect(best?.scan.barcode).toBe("PH8002878491");
   });
 
-  it("requires at least 2 burst photos", () => {
-    expect(SCAN_CONFIG.burstPhotoCount).toBeGreaterThanOrEqual(2);
+  it("uses 3 photos with 0.3s spacing", () => {
+    expect(SCAN_CONFIG.burstPhotoCount).toBe(3);
+    expect(SCAN_CONFIG.burstPhotoIntervalMs).toBe(300);
   });
 });

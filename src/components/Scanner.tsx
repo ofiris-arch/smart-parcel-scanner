@@ -34,8 +34,12 @@ import {
 } from "../lib/torch";
 import {
   analyzeBurstFrames,
+  burstFailureToResult,
   captureBurstFromVideo,
+  captureFrameFromVideo,
 } from "../lib/burstScan";
+import { decodeBarcodeFromFrame } from "../lib/decodeFrame";
+import { BarcodeStabilityTracker } from "../lib/previewBarcode";
 import { SCAN_CONFIG } from "../lib/scanConfig";
 import { verifiedScanToResult } from "../lib/verifyScan";
 import type { ScanPhase, ScanResult } from "../lib/types";
@@ -53,6 +57,9 @@ export function Scanner({ onSample }: ScannerProps) {
   const streamRef = useRef<MediaStream | null>(null);
   const burstInProgressRef = useRef(false);
   const enginesReadyRef = useRef(false);
+  const stabilityTrackerRef = useRef(new BarcodeStabilityTracker());
+  const captureCooldownUntilRef = useRef(0);
+  const runBurstCaptureRef = useRef<() => Promise<void>>(async () => {});
 
   const [phase, setPhase] = useState<ScanPhase>("scanning");
   const [engineReady, setEngineReady] = useState(false);
@@ -98,11 +105,14 @@ export function Scanner({ onSample }: ScannerProps) {
   }, []);
 
   const completeWithResult = useCallback(
-    async (scanResult: ScanResult) => {
+    async (scanResult: ScanResult, options?: { playBeep?: boolean }) => {
       stopCamera();
-      setSuccessFlash(true);
-      window.setTimeout(() => setSuccessFlash(false), 450);
-      const beepOk = await playSuccessBeep();
+      const playBeep = options?.playBeep !== false && scanResult.matched === true;
+      if (playBeep) {
+        setSuccessFlash(true);
+        window.setTimeout(() => setSuccessFlash(false), 450);
+      }
+      const beepOk = playBeep ? await playSuccessBeep() : false;
       logScan("scan_complete", "Scan finished — showing results", {
         barcode: scanResult.barcode,
         printedNumber: scanResult.printedNumber,
@@ -342,11 +352,13 @@ export function Scanner({ onSample }: ScannerProps) {
     if (!video) return;
 
     burstInProgressRef.current = true;
+    stabilityTrackerRef.current.reset();
     setPhase("processing");
+    const started = performance.now();
 
     try {
       setStatusHint(
-        `Taking ${SCAN_CONFIG.burstPhotoCount} photos — hold steady…`,
+        `Capturing ${SCAN_CONFIG.burstPhotoCount} photos — hold steady…`,
       );
 
       const frames = await captureBurstFromVideo(
@@ -355,12 +367,15 @@ export function Scanner({ onSample }: ScannerProps) {
         SCAN_CONFIG.burstPhotoIntervalMs,
       );
 
+      stopCamera();
       setStatusHint("Analyzing photos…");
 
       const burst = await analyzeBurstFrames(frames, {
         detectBarcode,
         detectPrintedNumber,
       });
+
+      const processingMs = Math.round(performance.now() - started);
 
       if (burst.ok && burst.scan) {
         logScan("verification", "Burst capture verified", {
@@ -373,32 +388,105 @@ export function Scanner({ onSample }: ScannerProps) {
           },
           conclusion: "Verified match (burst)",
         });
-        await completeWithResult(verifiedScanToResult(burst.scan));
+        const result = verifiedScanToResult(burst.scan);
+        result.processingMs = processingMs;
+        await completeWithResult(result, { playBeep: true });
       } else {
-        setPhase("scanning");
-        const dbg = burst.debug;
-        setStatusHint(
-          dbg?.barcode
-            ? `Barcode ${dbg.barcode}${dbg.printed ? ` · read “${dbg.printed}”` : " · number not found"} — adjust & tap Take photos`
-            : "Could not verify — center label in box and tap Take photos",
-        );
+        logScan("verification", "Burst capture could not verify", {
+          barcode: burst.debug?.barcode,
+          printedNumber: burst.debug?.printed ?? undefined,
+          matched: false,
+          detail: { framesAnalyzed: burst.framesAnalyzed, statuses: burst.debug?.statuses },
+          conclusion: burst.reason ?? "no_consensus",
+        });
+        await completeWithResult(burstFailureToResult(burst, processingMs), {
+          playBeep: false,
+        });
       }
     } catch {
+      stopCamera();
       setPhase("scanning");
       setStatusHint(null);
     } finally {
       burstInProgressRef.current = false;
+      captureCooldownUntilRef.current =
+        Date.now() + SCAN_CONFIG.captureCooldownMs;
     }
   }, [
     cameraActive,
     detectBarcode,
     detectPrintedNumber,
     completeWithResult,
+    stopCamera,
   ]);
+
+  runBurstCaptureRef.current = runBurstCapture;
+
+  useEffect(() => {
+    if (phase !== "scanning" || !cameraActive || !engineReady || !detectBarcode) {
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const tick = async () => {
+      if (
+        cancelled ||
+        inFlight ||
+        burstInProgressRef.current ||
+        Date.now() < captureCooldownUntilRef.current
+      ) {
+        return;
+      }
+
+      const video = videoRef.current;
+      if (!video || video.readyState < 2) return;
+
+      inFlight = true;
+      try {
+        const frame = captureFrameFromVideo(video);
+        if (!frame || cancelled) return;
+
+        const hit = await decodeBarcodeFromFrame(frame, { aggressive: false });
+        if (cancelled || burstInProgressRef.current) return;
+
+        const state = stabilityTrackerRef.current.note(hit?.value);
+        if (state.value) {
+          if (state.stable) {
+            cancelled = true;
+            stabilityTrackerRef.current.reset();
+            setStatusHint("Barcode locked — capturing…");
+            void runBurstCaptureRef.current();
+          } else if (state.streak === 1) {
+            setStatusHint(`Barcode seen — hold steady (${state.value})`);
+          }
+        } else if (!burstInProgressRef.current) {
+          setStatusHint(null);
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const id = window.setInterval(
+      () => void tick(),
+      SCAN_CONFIG.previewScanIntervalMs,
+    );
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      stabilityTrackerRef.current.reset();
+    };
+  }, [phase, cameraActive, engineReady, detectBarcode]);
 
   const reset = () => {
     setResult(null);
     setError(null);
+    setStatusHint(null);
+    stabilityTrackerRef.current.reset();
+    captureCooldownUntilRef.current = 0;
     setPhase("scanning");
     if (isMobileDevice()) {
       stopCamera();
@@ -427,8 +515,14 @@ export function Scanner({ onSample }: ScannerProps) {
         >
           <video ref={videoRef} playsInline muted autoPlay />
           <BarcodeGuide />
+          {phase === "processing" && (
+            <div className="processing-overlay" aria-live="polite">
+              <div className="processing-spinner" aria-hidden />
+              <p>{statusHint ?? "Processing…"}</p>
+            </div>
+          )}
           <canvas ref={frameRef} hidden />
-          {!cameraActive && (
+          {!cameraActive && phase !== "processing" && (
             <div className="camera-prompt">
               <button type="button" className="primary" onClick={enableCamera}>
                 Enable camera
@@ -471,7 +565,9 @@ export function Scanner({ onSample }: ScannerProps) {
           <div className="guide">
             <p>
               {statusHint ??
-                "Align label in the box, then tap Take photos"}
+                (detectBarcode
+                  ? "Align barcode in the box — auto-captures when clear"
+                  : "Turn on Barcode to scan")}
             </p>
           </div>
         </div>
@@ -512,17 +608,6 @@ export function Scanner({ onSample }: ScannerProps) {
       </div>
 
       <div className="controls">
-        <button
-          type="button"
-          className="primary"
-          disabled={busy || !cameraActive}
-          onClick={() => {
-            primeAudio();
-            void runBurstCapture();
-          }}
-        >
-          Take photos
-        </button>
         <button
           type="button"
           className={torchOn ? "secondary torch-on toggle-on" : "secondary"}
