@@ -3,7 +3,12 @@ import { prepareBarcodeEngine } from "../lib/barcode";
 import { getScanDeviceInfo, type ScanDeviceInfo } from "../lib/deviceInfo";
 import { preparePrintedOcr } from "../lib/printedOcr";
 import { logScan } from "../lib/scanLogger";
-import { isAudioPrimed, playSuccessBeep, primeAudio } from "../lib/sound";
+import {
+  isAudioPrimed,
+  playSuccessBeep,
+  primeAudio,
+  primeAudioAsync,
+} from "../lib/sound";
 import {
   getCameraBlockReason,
   isIOS,
@@ -69,6 +74,8 @@ export function Scanner({ onSample }: ScannerProps) {
   const [deviceInfo, setDeviceInfo] = useState<ScanDeviceInfo | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraStatus, setCameraStatus] = useState<string | null>(null);
+  const [soundReady, setSoundReady] = useState(false);
+  const [successFlash, setSuccessFlash] = useState(false);
   const desktopCameraStartedRef = useRef(false);
 
   const stopCamera = useCallback(() => {
@@ -109,6 +116,8 @@ export function Scanner({ onSample }: ScannerProps) {
   const completeWithResult = useCallback(
     async (scanResult: ScanResult) => {
       stopCamera();
+      setSuccessFlash(true);
+      window.setTimeout(() => setSuccessFlash(false), 450);
       const beepOk = await playSuccessBeep();
       logScan("scan_complete", "Scan finished — showing results", {
         barcode: scanResult.barcode,
@@ -229,7 +238,7 @@ export function Scanner({ onSample }: ScannerProps) {
     const streamPromise = requestCameraFromGesture(request);
 
     stopCamera();
-    primeAudio();
+    void primeAudioAsync().then((ok) => setSoundReady(ok || isAudioPrimed()));
     setError(null);
 
     logScan("lifecycle", "Enable camera tapped", {
@@ -506,7 +515,14 @@ export function Scanner({ onSample }: ScannerProps) {
   return (
     <div className="scanner">
       {!result && (
-        <div className="viewport" onPointerDown={() => primeAudio()}>
+        <div
+          className={`viewport${successFlash ? " viewport--success" : ""}`}
+          onPointerDown={() => {
+            void primeAudioAsync().then((ok) =>
+              setSoundReady(ok || isAudioPrimed()),
+            );
+          }}
+        >
           <video ref={videoRef} playsInline muted autoPlay />
           <BarcodeGuide />
           <canvas ref={frameRef} hidden />
@@ -666,7 +682,11 @@ export function Scanner({ onSample }: ScannerProps) {
           ? "Flash helps scan in low light (rear camera)"
           : "Flash unavailable on this browser — use bright lighting"}
         {" · "}
-        Tap once for beep
+        {soundReady
+          ? "Beep ready"
+          : isIPhone()
+            ? "Tap Enable camera for beep (turn off Silent switch)"
+            : "Tap once for beep"}
       </p>
     </div>
   );
