@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { MobileOpenQr } from "./components/MobileOpenQr";
 import { Scanner } from "./components/Scanner";
 import { ResultView } from "./components/ResultView";
 import { prepareBarcodeEngine } from "./lib/barcode";
@@ -86,6 +87,7 @@ function App() {
         <p>
           Auto-captures when the barcode matches the number printed below it.
         </p>
+        <MobileOpenQr />
       </header>
       <Scanner onSample={sampleLoading ? undefined : runSample} />
       {sampleLoading && (

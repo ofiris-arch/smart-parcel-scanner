@@ -22,6 +22,60 @@
   font-size: 0.9rem;
 }
 
+.mobile-open-qr {
+  margin-top: 1rem;
+  padding: 0.85rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  text-align: center;
+}
+
+.mobile-open-qr-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.mobile-open-qr-image {
+  display: block;
+  margin: 0 auto;
+  border-radius: 8px;
+  background: #fff;
+  padding: 6px;
+}
+
+.mobile-open-qr-placeholder {
+  width: 220px;
+  height: 220px;
+  margin: 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.mobile-open-qr-link {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  word-break: break-all;
+  color: var(--muted);
+}
+
+.mobile-open-qr-hint,
+.mobile-open-qr-error {
+  margin: 0.4rem 0 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.mobile-open-qr-error {
+  color: var(--danger);
+}
+
 .scanner {
   flex: 1;
   display: flex;
