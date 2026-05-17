@@ -1,11 +1,15 @@
 import { decodeBarcodeFromFrame } from "./decodeFrame";
 import { logScan } from "./scanLogger";
+import { readPrintedForBarcode } from "./printedOcr";
 import { SCAN_CONFIG } from "./scanConfig";
+import { trackingNumbersMatch } from "./tracking";
+import type { BarcodeDecodeResult } from "./barcode";
 import {
   scanFrame,
   type ScanFrameOptions,
   type VerifiedScan,
 } from "./verifyScan";
+import { verificationAccuracy } from "./accuracy";
 
 export function captureFrameFromVideo(
   video: HTMLVideoElement,
@@ -41,6 +45,11 @@ export interface BurstAnalyzeResult {
   votes?: number;
   framesAnalyzed: number;
   reason?: string;
+  debug?: {
+    barcode?: string;
+    printed?: string | null;
+    statuses: string[];
+  };
 }
 
 export function pickBurstConsensus(
@@ -67,6 +76,69 @@ export function pickBurstConsensus(
   return best;
 }
 
+function buildVerifiedScan(
+  barcode: string,
+  printed: string,
+  barcodeDetectionMs: number,
+  printedDetectionMs: number,
+  ocrConfidence: number,
+): VerifiedScan {
+  return {
+    barcode,
+    printedNumber: printed,
+    matched: true,
+    accuracyPercent: verificationAccuracy(barcode, printed),
+    ocrConfidence,
+    barcodeDetectionMs,
+    printedDetectionMs,
+    processingMs: barcodeDetectionMs + printedDetectionMs,
+  };
+}
+
+function syntheticBarcode(
+  frame: HTMLCanvasElement,
+  value: string,
+  template?: BarcodeDecodeResult,
+): BarcodeDecodeResult {
+  if (template) return { ...template, value };
+  return {
+    value,
+    bottomY: frame.height * 0.48,
+    leftX: frame.width * 0.08,
+    rightX: frame.width * 0.92,
+  };
+}
+
+/** Second pass: known barcode → OCR guide/above/below on each frame. */
+async function verifyBurstWithBarcode(
+  frames: HTMLCanvasElement[],
+  barcodeValue: string,
+  template: BarcodeDecodeResult | undefined,
+  detectPrinted: boolean,
+): Promise<VerifiedScan | null> {
+  if (!detectPrinted) {
+    return buildVerifiedScan(barcodeValue, "—", 0, 0, 0);
+  }
+
+  for (const frame of frames) {
+    const anchor = syntheticBarcode(frame, barcodeValue, template);
+    const start = performance.now();
+    const ocr = await readPrintedForBarcode(frame, anchor);
+    const printedDetectionMs = Math.round(performance.now() - start);
+
+    if (ocr.printed && trackingNumbersMatch(barcodeValue, ocr.printed)) {
+      return buildVerifiedScan(
+        barcodeValue,
+        ocr.printed,
+        0,
+        printedDetectionMs,
+        ocr.ocrConfidence,
+      );
+    }
+  }
+  return null;
+}
+
 /** Run full barcode + OCR on each still; pick majority verified result. */
 export async function analyzeBurstFrames(
   frames: HTMLCanvasElement[],
@@ -76,19 +148,46 @@ export async function analyzeBurstFrames(
     return { ok: false, framesAnalyzed: 0, reason: "no_frames" };
   }
 
+  const detectPrinted = options.detectPrintedNumber !== false;
   const verified: VerifiedScan[] = [];
   const statuses: string[] = [];
+  const decoded: { frame: HTMLCanvasElement; barcode: BarcodeDecodeResult }[] =
+    [];
 
   for (let i = 0; i < frames.length; i++) {
-    const outcome = await scanFrame(frames[i]!, {
+    const frame = frames[i]!;
+    const outcome = await scanFrame(frame, {
       ...options,
       aggressiveBarcode: true,
       barcodeStableFrames: 99,
     });
     statuses.push(outcome.status);
+
     if (outcome.status === "verified") {
       verified.push(outcome.scan);
+    } else if (outcome.status === "barcode_only") {
+      decoded.push({
+        frame,
+        barcode: {
+          value: outcome.barcode,
+          bottomY: frame.height * 0.48,
+          leftX: frame.width * 0.08,
+          rightX: frame.width * 0.92,
+        },
+      });
+    } else if (
+      outcome.status === "mismatch" ||
+      outcome.status === "barcode_locked"
+    ) {
+      const b = await decodeBarcodeFromFrame(frame, { aggressive: true });
+      if (b) decoded.push({ frame, barcode: b });
     }
+  }
+
+  for (const frame of frames) {
+    if (decoded.some((d) => d.frame === frame)) continue;
+    const b = await decodeBarcodeFromFrame(frame, { aggressive: true });
+    if (b) decoded.push({ frame, barcode: b });
   }
 
   logScan("scan_attempt", "Burst frames analyzed", {
@@ -96,6 +195,7 @@ export async function analyzeBurstFrames(
       frameCount: frames.length,
       statuses,
       verifiedCount: verified.length,
+      decodedBarcodes: decoded.map((d) => d.barcode.value),
     },
   });
 
@@ -126,17 +226,53 @@ export async function analyzeBurstFrames(
     };
   }
 
+  const counts = new Map<string, number>();
+  for (const { barcode } of decoded) {
+    counts.set(barcode.value, (counts.get(barcode.value) ?? 0) + 1);
+  }
+  let majorityBarcode = "";
+  let majorityCount = 0;
+  for (const [value, count] of counts) {
+    if (count > majorityCount) {
+      majorityCount = count;
+      majorityBarcode = value;
+    }
+  }
+
+  const template = decoded.find((d) => d.barcode.value === majorityBarcode)
+    ?.barcode;
+
+  if (majorityBarcode) {
+    const rescue = await verifyBurstWithBarcode(
+      frames,
+      majorityBarcode,
+      template,
+      detectPrinted,
+    );
+    if (rescue) {
+      return {
+        ok: true,
+        scan: rescue,
+        votes: 1,
+        framesAnalyzed: frames.length,
+      };
+    }
+  }
+
+  let lastPrinted: string | null = null;
+  if (majorityBarcode && template) {
+    const ocr = await readPrintedForBarcode(frames[0]!, template);
+    lastPrinted = ocr.printed;
+  }
+
   return {
     ok: false,
     framesAnalyzed: frames.length,
     reason: "no_consensus",
+    debug: {
+      barcode: majorityBarcode || undefined,
+      printed: lastPrinted,
+      statuses,
+    },
   };
-}
-
-/** Fast barcode-only check to decide when to burst-capture. */
-export async function previewBarcode(
-  frame: HTMLCanvasElement,
-): Promise<string | null> {
-  const hit = await decodeBarcodeFromFrame(frame, { aggressive: true });
-  return hit?.value ?? null;
 }

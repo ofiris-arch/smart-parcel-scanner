@@ -191,6 +191,112 @@ async function recognizePrintedStrip(
 /**
  * One prepared strip, native → one Tesseract pass (not a hardware issue — WASM CPU).
  */
+function cropStripBelowBarcode(
+  frame: HTMLCanvasElement,
+  barcode: BarcodeDecodeResult,
+): HTMLCanvasElement {
+  const y0 = Math.min(frame.height - 1, Math.round(barcode.bottomY + 2));
+  const h = Math.max(
+    56,
+    Math.min(Math.round(frame.height * 0.2), frame.height - y0),
+  );
+  const x0 = Math.max(0, Math.round(barcode.leftX - 60));
+  const w = Math.min(
+    frame.width - x0,
+    Math.max(100, Math.round(barcode.rightX - barcode.leftX + 120)),
+  );
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  out.getContext("2d")!.drawImage(frame, x0, y0, w, h, 0, 0, w, h);
+  return out;
+}
+
+function cropStripAboveBarcode(
+  frame: HTMLCanvasElement,
+  barcode: BarcodeDecodeResult,
+): HTMLCanvasElement {
+  const barH = Math.max(
+    24,
+    Math.round((barcode.rightX - barcode.leftX) * 0.35),
+  );
+  const yEnd = Math.max(0, Math.round(barcode.bottomY - barH));
+  const h = Math.max(48, Math.min(Math.round(frame.height * 0.22), yEnd));
+  const y0 = Math.max(0, yEnd - h);
+  const x0 = Math.max(0, Math.round(barcode.leftX - 80));
+  const w = Math.min(
+    frame.width - x0,
+    Math.max(120, Math.round(barcode.rightX - barcode.leftX + 160)),
+  );
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  out.getContext("2d")!.drawImage(frame, x0, y0, w, h, 0, 0, w, h);
+  return out;
+}
+
+/** Search guide band, above, and below barcode for the tracking number. */
+export async function readPrintedForBarcode(
+  frame: HTMLCanvasElement,
+  barcode: BarcodeDecodeResult,
+): Promise<PrintedOcrResult> {
+  const tries: { region: string; hit: Awaited<ReturnType<typeof recognizePrintedStrip>> }[] =
+    [];
+
+  const guide = cropFrameRegion(frame, GUIDE_BARCODE_AND_PRINTED);
+  tries.push({
+    region: "guide",
+    hit: await recognizePrintedStrip(
+      prepareStrip(guide),
+      barcode,
+      guide.height,
+      true,
+    ),
+  });
+
+  const above = cropStripAboveBarcode(frame, barcode);
+  tries.push({
+    region: "above",
+    hit: await recognizePrintedStrip(
+      prepareStrip(above),
+      barcode,
+      above.height,
+      true,
+    ),
+  });
+
+  const below = cropStripBelowBarcode(frame, barcode);
+  tries.push({
+    region: "below",
+    hit: await recognizePrintedStrip(
+      prepareStrip(below),
+      barcode,
+      below.height,
+      true,
+    ),
+  });
+
+  for (const { hit } of tries) {
+    if (hit.result.printed) {
+      return {
+        ...hit.result,
+        engine: hit.engine,
+        tessPasses: tries.reduce((n, t) => n + t.hit.tessPasses, 0),
+        rawLine: hit.result.rawLine,
+      };
+    }
+  }
+
+  const last = tries[tries.length - 1]?.hit;
+  return {
+    printed: null,
+    ocrConfidence: last?.result.ocrConfidence ?? 0,
+    engine: last?.engine ?? "none",
+    tessPasses: tries.reduce((n, t) => n + t.hit.tessPasses, 0),
+    rawLine: tries.map((t) => t.hit.result.rawLine).filter(Boolean).join(" | "),
+  };
+}
+
 export async function readPrintedBelowBarcode(
   strip: HTMLCanvasElement,
   barcode: BarcodeDecodeResult,

@@ -8,7 +8,7 @@ import {
 } from "./barcode";
 import { buildScanFields } from "./buildFields";
 import {
-  readPrintedBelowBarcode,
+  readPrintedForBarcode,
   readPrintedInGuide,
 } from "./printedOcr";
 import type { ScanResult } from "./types";
@@ -46,35 +46,6 @@ export type ScanFrameStatus =
   | { status: "printed_only"; printed: string; printedDetectionMs: number }
   | { status: "mismatch"; barcode: string; printedNumber: string }
   | { status: "verified"; scan: VerifiedScan };
-
-function cropBelowBarcode(
-  frame: HTMLCanvasElement,
-  barcode: BarcodeDecodeResult,
-): HTMLCanvasElement {
-  const y0 = Math.min(frame.height - 1, Math.round(barcode.bottomY + 2));
-  const h = Math.max(
-    56,
-    Math.min(Math.round(frame.height * 0.18), frame.height - y0),
-  );
-  const x0 = Math.max(0, Math.round(barcode.leftX - 60));
-  const w = Math.min(
-    frame.width - x0,
-    Math.max(100, Math.round(barcode.rightX - barcode.leftX + 120)),
-  );
-  const out = document.createElement("canvas");
-  out.width = w;
-  out.height = h;
-  out.getContext("2d")!.drawImage(frame, x0, y0, w, h, 0, 0, w, h);
-  return out;
-}
-
-async function readPrintedNumber(
-  frame: HTMLCanvasElement,
-  barcode: BarcodeDecodeResult,
-) {
-  const strip = cropBelowBarcode(frame, barcode);
-  return readPrintedBelowBarcode(strip, barcode);
-}
 
 function verifiedFromBarcodeOnly(
   barcode: BarcodeDecodeResult,
@@ -180,13 +151,13 @@ export async function scanFrame(
   }
 
   const printedStart = performance.now();
-  const ocr = await readPrintedNumber(frame, barcode);
+  const ocr = await readPrintedForBarcode(frame, barcode);
   const printedDetectionMs = Math.round(performance.now() - printedStart);
 
   if (!ocr.printed) {
     logScan(
       "printed_ocr",
-      "Could not read printed number below barcode",
+      "Could not read printed tracking number on label",
       {
         barcode: barcode.value,
         ocrConfidence: ocr.ocrConfidence,

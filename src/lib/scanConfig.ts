@@ -5,5 +5,5 @@ export const SCAN_CONFIG = {
   /** Ms between each photo in a burst. */
   burstPhotoIntervalMs: 120,
   /** Min frames that must agree on barcode + printed (of burstPhotoCount). */
-  burstMinAgreeingFrames: 2,
+  burstMinAgreeingFrames: 1,
 } as const;

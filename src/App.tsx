@@ -85,7 +85,8 @@ function App() {
       <header className="app-header">
         <h1>Barcode Scanner</h1>
         <p>
-          Auto-captures when the barcode matches the number printed below it.
+          Tap Take photos — we capture 3 stills and match the barcode to the
+          printed tracking number.
         </p>
         <MobileOpenQr />
       </header>

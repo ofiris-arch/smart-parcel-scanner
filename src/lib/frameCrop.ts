@@ -6,12 +6,12 @@ export const GUIDE_BARCODE = {
   h: 0.28,
 } as const;
 
-/** Barcode band + human-readable number directly below. */
+/** Barcode + tracking text (often above and below the bars on shipping labels). */
 export const GUIDE_BARCODE_AND_PRINTED = {
-  x: 0.06,
-  y: 0.22,
-  w: 0.88,
-  h: 0.42,
+  x: 0.04,
+  y: 0.08,
+  w: 0.92,
+  h: 0.58,
 } as const;
 
 export function cropFrameRegion(

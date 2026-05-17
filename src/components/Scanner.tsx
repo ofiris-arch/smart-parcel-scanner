@@ -376,8 +376,11 @@ export function Scanner({ onSample }: ScannerProps) {
         await completeWithResult(verifiedScanToResult(burst.scan));
       } else {
         setPhase("scanning");
+        const dbg = burst.debug;
         setStatusHint(
-          "Could not verify — adjust the label and tap Take photos again",
+          dbg?.barcode
+            ? `Barcode ${dbg.barcode}${dbg.printed ? ` · read “${dbg.printed}”` : " · number not found"} — adjust & tap Take photos`
+            : "Could not verify — center label in box and tap Take photos",
         );
       }
     } catch {
