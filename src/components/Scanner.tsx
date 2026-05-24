@@ -41,9 +41,16 @@ import {
 import { decodeBarcodeFromFrame } from "../lib/decodeFrame";
 import { BarcodeStabilityTracker } from "../lib/previewBarcode";
 import { SCAN_CONFIG } from "../lib/scanConfig";
+import {
+  loadCameraSettings,
+  readActiveVideoInfo,
+  type ActiveVideoInfo,
+  type CameraSettings,
+} from "../lib/cameraSettings";
 import { verifiedScanToResult } from "../lib/verifyScan";
 import type { ScanPhase, ScanResult } from "../lib/types";
 import { BarcodeGuide } from "./BarcodeGuide";
+import { CameraSettingsPanel } from "./CameraSettingsPanel";
 import { MobileCapabilities } from "./MobileCapabilities";
 import { ResultView } from "./ResultView";
 
@@ -60,6 +67,7 @@ export function Scanner({ onSample }: ScannerProps) {
   const stabilityTrackerRef = useRef(new BarcodeStabilityTracker());
   const captureCooldownUntilRef = useRef(0);
   const runBurstCaptureRef = useRef<() => Promise<void>>(async () => {});
+  const cameraSettingsRef = useRef(loadCameraSettings());
 
   const [phase, setPhase] = useState<ScanPhase>("scanning");
   const [engineReady, setEngineReady] = useState(false);
@@ -77,7 +85,21 @@ export function Scanner({ onSample }: ScannerProps) {
   const [cameraStatus, setCameraStatus] = useState<string | null>(null);
   const [soundReady, setSoundReady] = useState(false);
   const [successFlash, setSuccessFlash] = useState(false);
+  const [cameraSettings, setCameraSettings] = useState<CameraSettings>(() =>
+    loadCameraSettings(),
+  );
+  const [activeVideo, setActiveVideo] = useState<ActiveVideoInfo | null>(null);
   const desktopCameraStartedRef = useRef(false);
+
+  cameraSettingsRef.current = cameraSettings;
+
+  const withCameraSettings = useCallback(
+    (request: CameraRequest = {}): CameraRequest => ({
+      ...request,
+      settings: cameraSettingsRef.current,
+    }),
+    [],
+  );
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -85,6 +107,7 @@ export function Scanner({ onSample }: ScannerProps) {
     const video = videoRef.current;
     if (video) video.srcObject = null;
     setCameraActive(false);
+    setActiveVideo(null);
   }, []);
 
   const handleCameraError = useCallback((err: unknown) => {
@@ -165,6 +188,7 @@ export function Scanner({ onSample }: ScannerProps) {
         const settings = track?.getSettings();
         const activeId = settings?.deviceId ?? request.deviceId ?? "";
         if (activeId) setSelectedDeviceId(activeId);
+        setActiveVideo(readActiveVideoInfo(track));
 
         const list = await refreshCameraList();
         const matched = list.find((c) => c.deviceId === activeId);
@@ -184,6 +208,8 @@ export function Scanner({ onSample }: ScannerProps) {
             cameraCount: list.length,
             torchOn: wantTorch,
             torchSupported: supported,
+            video: readActiveVideoInfo(track),
+            cameraSettings: cameraSettingsRef.current,
           },
         });
         setPhase("scanning");
@@ -206,9 +232,9 @@ export function Scanner({ onSample }: ScannerProps) {
         handleCameraError(blocked);
         return;
       }
-      void attachStream(requestCamera(request), request);
+      void attachStream(requestCamera(withCameraSettings(request)), request);
     },
-    [stopCamera, attachStream, handleCameraError],
+    [stopCamera, attachStream, handleCameraError, withCameraSettings],
   );
 
   /** getUserMedia must be the first call in the tap handler on iPhone Safari. */
@@ -220,9 +246,11 @@ export function Scanner({ onSample }: ScannerProps) {
       return;
     }
 
-    const request: CameraRequest = selectedDeviceId
-      ? { deviceId: selectedDeviceId }
-      : { facingMode: "environment" };
+    const request = withCameraSettings(
+      selectedDeviceId
+        ? { deviceId: selectedDeviceId }
+        : { facingMode: "environment" },
+    );
 
     const streamPromise = requestCameraFromGesture(request);
 
@@ -240,7 +268,7 @@ export function Scanner({ onSample }: ScannerProps) {
     });
 
     void attachStream(streamPromise, request);
-  }, [selectedDeviceId, stopCamera, attachStream, handleCameraError]);
+  }, [selectedDeviceId, stopCamera, attachStream, handleCameraError, withCameraSettings]);
 
   /** Switch camera — getUserMedia first (iOS gesture). */
   const switchToCamera = useCallback(
@@ -251,7 +279,8 @@ export function Scanner({ onSample }: ScannerProps) {
         return;
       }
 
-      const streamPromise = requestCameraFromGesture({ deviceId });
+      const request = withCameraSettings({ deviceId });
+      const streamPromise = requestCameraFromGesture(request);
 
       stopCamera();
       primeAudio();
@@ -261,10 +290,38 @@ export function Scanner({ onSample }: ScannerProps) {
         detail: { deviceId },
       });
 
-      void attachStream(streamPromise, { deviceId });
+      void attachStream(streamPromise, request);
     },
-    [stopCamera, attachStream, handleCameraError],
+    [stopCamera, attachStream, handleCameraError, withCameraSettings],
   );
+
+  const applyCameraSettings = useCallback(() => {
+    const blocked = getCameraBlockReason();
+    if (blocked) {
+      handleCameraError(blocked);
+      return;
+    }
+
+    primeAudio();
+    const request = withCameraSettings(
+      selectedDeviceId
+        ? { deviceId: selectedDeviceId }
+        : { facingMode: "environment" },
+    );
+
+    stopCamera();
+    if (isMobileDevice()) {
+      void attachStream(requestCameraFromGesture(request), request);
+    } else {
+      void attachStream(requestCamera(request), request);
+    }
+  }, [
+    selectedDeviceId,
+    stopCamera,
+    attachStream,
+    handleCameraError,
+    withCameraSettings,
+  ]);
 
   const cycleCamera = useCallback(() => {
     const next = nextCameraInList(cameras, selectedDeviceId);
@@ -579,6 +636,14 @@ export function Scanner({ onSample }: ScannerProps) {
           torchSupported={torchSupported}
         />
       )}
+
+      <CameraSettingsPanel
+        settings={cameraSettings}
+        activeVideo={activeVideo}
+        disabled={busy}
+        onChange={setCameraSettings}
+        onApply={applyCameraSettings}
+      />
 
       <div className="controls controls-detection">
         <button

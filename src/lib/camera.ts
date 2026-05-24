@@ -1,8 +1,17 @@
+import {
+  buildCameraConstraintAttempts,
+  buildVideoConstraints,
+  DEFAULT_CAMERA_SETTINGS,
+  type CameraSettings,
+} from "./cameraSettings";
+
 export type CameraFacing = "environment" | "user";
+export type { CameraSettings };
 
 export interface CameraRequest {
   deviceId?: string;
   facingMode?: CameraFacing;
+  settings?: CameraSettings;
 }
 
 export interface CameraErrorInfo {
@@ -149,27 +158,19 @@ export function requestCameraFromGesture(
     throw blocked ?? new Error("Camera unavailable");
   }
 
+  const settings = req.settings ?? DEFAULT_CAMERA_SETTINGS;
+
   if (req.deviceId) {
     return gum({
-      video: { deviceId: { exact: req.deviceId } },
+      video: buildVideoConstraints(settings, req, { exactDevice: true }),
       audio: false,
     });
   }
 
-  if (req.facingMode) {
-    return gum({
-      video: { facingMode: { ideal: req.facingMode } },
-      audio: false,
-    });
-  }
-
-  // First permission on iOS: simplest constraint opens the permission sheet.
-  if (isIOS()) {
-    return gum({ video: true, audio: false });
-  }
+  const facing = req.facingMode ?? "environment";
 
   return gum({
-    video: { facingMode: { ideal: "environment" } },
+    video: buildVideoConstraints(settings, { facingMode: facing }),
     audio: false,
   });
 }
@@ -180,38 +181,13 @@ export async function requestCamera(req: CameraRequest = {}): Promise<MediaStrea
   if (blocked) throw blocked;
 
   const gum = getUserMediaFn()!;
+  const settings = req.settings ?? DEFAULT_CAMERA_SETTINGS;
   const facing = req.facingMode ?? "environment";
 
-  const attempts: MediaStreamConstraints[] = [];
-
-  if (req.deviceId) {
-    attempts.push({
-      video: { deviceId: { exact: req.deviceId } },
-      audio: false,
-    });
-  }
-
-  attempts.push(
-    {
-      video: {
-        facingMode: { ideal: facing },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-      audio: false,
-    },
-    {
-      video: {
-        facingMode: facing,
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-      audio: false,
-    },
-    { video: { facingMode: { ideal: facing } }, audio: false },
-    { video: { facingMode: facing }, audio: false },
-    { video: true, audio: false },
-  );
+  const attempts = buildCameraConstraintAttempts(settings, {
+    deviceId: req.deviceId,
+    facingMode: facing,
+  });
 
   let lastError: unknown;
   for (const constraints of attempts) {

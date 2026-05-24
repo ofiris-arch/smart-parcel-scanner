@@ -260,6 +260,63 @@
   margin-bottom: -0.25rem;
 }
 
+.camera-settings {
+  padding: 0.85rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.camera-settings-title {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.camera-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.camera-settings-field select {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: inherit;
+  font-size: 0.9rem;
+  font-family: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.camera-settings-active {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.camera-settings-active strong {
+  color: inherit;
+  font-weight: 600;
+}
+
+.camera-settings-apply {
+  width: 100%;
+}
+
 .camera-select {
   flex: 1 1 100%;
   display: flex;
