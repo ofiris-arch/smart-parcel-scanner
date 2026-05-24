@@ -1,6 +1,6 @@
 import { decodeBarcodeFromFrame } from "./decodeFrame";
 import { logScan } from "./scanLogger";
-import { readPrintedForBarcode } from "./printedOcr";
+import { readPrintedFast, readPrintedForBarcode } from "./printedOcr";
 import { SCAN_CONFIG } from "./scanConfig";
 import { trackingNumbersMatch } from "./tracking";
 import type { BarcodeDecodeResult } from "./barcode";
@@ -126,7 +126,7 @@ async function verifyBurstWithBarcode(
   for (const frame of frames) {
     const anchor = syntheticBarcode(frame, barcodeValue, template);
     const start = performance.now();
-    const ocr = await readPrintedForBarcode(frame, anchor);
+    const ocr = await readPrintedFast(frame, anchor);
     const printedDetectionMs = Math.round(performance.now() - start);
 
     if (ocr.printed && trackingNumbersMatch(barcodeValue, ocr.printed)) {

@@ -235,6 +235,75 @@ function cropStripAboveBarcode(
   return out;
 }
 
+/** Fast path: parallel native on all regions, then ≤2 Tesseract passes (above → guide). */
+export async function readPrintedFast(
+  frame: HTMLCanvasElement,
+  barcode: BarcodeDecodeResult,
+): Promise<PrintedOcrResult> {
+  type Region = { name: string; canvas: HTMLCanvasElement; height: number };
+
+  const aboveRaw = cropStripAboveBarcode(frame, barcode);
+  const guideRaw = cropFrameRegion(frame, GUIDE_BARCODE_AND_PRINTED);
+  const belowRaw = cropStripBelowBarcode(frame, barcode);
+
+  const regions: Region[] = [
+    { name: "above", canvas: prepareStrip(aboveRaw), height: aboveRaw.height },
+    { name: "guide", canvas: prepareStrip(guideRaw), height: guideRaw.height },
+    { name: "below", canvas: prepareStrip(belowRaw), height: belowRaw.height },
+  ];
+
+  const nativeHits = await Promise.all(
+    regions.map(async (r) => {
+      const words = await detectTextNative(r.canvas);
+      const parsed = wordsToPrinted(words, barcode, r.height);
+      return { region: r.name, parsed };
+    }),
+  );
+
+  const nativeWin = nativeHits.find((h) => h.parsed.printed);
+  if (nativeWin) {
+    return {
+      ...nativeWin.parsed,
+      engine: "native",
+      tessPasses: 0,
+    };
+  }
+
+  const tessOrder = ["above", "guide", "below"] as const;
+  let tessPasses = 0;
+  let lastParsed: ReturnType<typeof wordsToPrinted> | null = null;
+  let lastEngine: PrintedOcrResult["engine"] = "none";
+
+  for (const name of tessOrder) {
+    if (tessPasses >= 2) break;
+    const r = regions.find((x) => x.name === name)!;
+    const words = await recognizePrintedCanvas(r.canvas);
+    tessPasses++;
+    const parsed = wordsToPrinted(words, barcode, r.height);
+    lastParsed = parsed;
+    lastEngine = words.length > 0 ? "tesseract" : "none";
+    if (parsed.printed) {
+      return {
+        ...parsed,
+        engine: "tesseract",
+        tessPasses,
+      };
+    }
+  }
+
+  return {
+    printed: null,
+    ocrConfidence: lastParsed?.ocrConfidence ?? 0,
+    engine: lastEngine,
+    tessPasses,
+    rawLine: nativeHits
+      .map((h) => h.parsed.rawLine)
+      .concat(lastParsed?.rawLine ?? "")
+      .filter(Boolean)
+      .join(" | "),
+  };
+}
+
 /** Search guide band, above, and below barcode for the tracking number. */
 export async function readPrintedForBarcode(
   frame: HTMLCanvasElement,

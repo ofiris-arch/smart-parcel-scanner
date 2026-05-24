@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { prepareBarcodeEngine } from "../lib/barcode";
+import { prepareBarcodeEngine, type BarcodeDecodeResult } from "../lib/barcode";
 import { getScanDeviceInfo, type ScanDeviceInfo } from "../lib/deviceInfo";
 import { preparePrintedOcr } from "../lib/printedOcr";
 import { logScan } from "../lib/scanLogger";
@@ -32,10 +32,9 @@ import {
   getVideoTrack,
   isTorchSupported,
 } from "../lib/torch";
+import { runPipelinedScan } from "../lib/scanPipeline";
 import {
-  analyzeBurstFrames,
   burstFailureToResult,
-  captureBurstFromVideo,
   captureFrameFromVideo,
 } from "../lib/burstScan";
 import { decodeBarcodeFromFrame } from "../lib/decodeFrame";
@@ -66,7 +65,10 @@ export function Scanner({ onSample }: ScannerProps) {
   const enginesReadyRef = useRef(false);
   const stabilityTrackerRef = useRef(new BarcodeStabilityTracker());
   const captureCooldownUntilRef = useRef(0);
-  const runBurstCaptureRef = useRef<() => Promise<void>>(async () => {});
+  const runBurstCaptureRef = useRef<
+    (lock: BarcodeDecodeResult) => Promise<void>
+  >(async () => {});
+  const lockedBarcodeRef = useRef<BarcodeDecodeResult | null>(null);
   const cameraSettingsRef = useRef(loadCameraSettings());
 
   const [phase, setPhase] = useState<ScanPhase>("scanning");
@@ -403,34 +405,29 @@ export function Scanner({ onSample }: ScannerProps) {
     });
   }, [engineReady, startCamera, refreshCameraList]);
 
-  const runBurstCapture = useCallback(async () => {
+  const runBurstCapture = useCallback(
+    async (lock: BarcodeDecodeResult) => {
     if (burstInProgressRef.current || !cameraActive) return;
     const video = videoRef.current;
     if (!video) return;
 
     burstInProgressRef.current = true;
     stabilityTrackerRef.current.reset();
+    lockedBarcodeRef.current = lock;
     setPhase("processing");
     const started = performance.now();
 
     try {
-      setStatusHint(
-        `Capturing ${SCAN_CONFIG.burstPhotoCount} photos — hold steady…`,
-      );
-
-      const frames = await captureBurstFromVideo(
+      const burst = await runPipelinedScan(
         video,
-        SCAN_CONFIG.burstPhotoCount,
-        SCAN_CONFIG.burstPhotoIntervalMs,
+        { barcode: lock, triggerFrame: undefined },
+        {
+          detectPrintedNumber,
+          onStatus: setStatusHint,
+        },
       );
 
       stopCamera();
-      setStatusHint("Analyzing photos…");
-
-      const burst = await analyzeBurstFrames(frames, {
-        detectBarcode,
-        detectPrintedNumber,
-      });
 
       const processingMs = Math.round(performance.now() - started);
 
@@ -442,8 +439,9 @@ export function Scanner({ onSample }: ScannerProps) {
           detail: {
             votes: burst.votes,
             framesAnalyzed: burst.framesAnalyzed,
+            pipelined: true,
           },
-          conclusion: "Verified match (burst)",
+          conclusion: "Verified match (pipelined)",
         });
         const result = verifiedScanToResult(burst.scan);
         result.processingMs = processingMs;
@@ -469,9 +467,9 @@ export function Scanner({ onSample }: ScannerProps) {
       captureCooldownUntilRef.current =
         Date.now() + SCAN_CONFIG.captureCooldownMs;
     }
-  }, [
+  },
+    [
     cameraActive,
-    detectBarcode,
     detectPrintedNumber,
     completeWithResult,
     stopCamera,
@@ -510,11 +508,11 @@ export function Scanner({ onSample }: ScannerProps) {
 
         const state = stabilityTrackerRef.current.note(hit?.value);
         if (state.value) {
-          if (state.stable) {
+          if (state.stable && hit) {
             cancelled = true;
             stabilityTrackerRef.current.reset();
             setStatusHint("Barcode locked — capturing…");
-            void runBurstCaptureRef.current();
+            void runBurstCaptureRef.current(hit);
           } else if (state.streak === 1) {
             setStatusHint(`Barcode seen — hold steady (${state.value})`);
           }
